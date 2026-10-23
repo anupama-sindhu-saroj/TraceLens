@@ -1,0 +1,11 @@
+{
+  "name": "otlp-sink",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "express": "^5.3.0"
+  }
+}

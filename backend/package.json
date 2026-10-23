@@ -1,0 +1,11 @@
+{
+  "name": "observability-engine",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": ["demo-services", "loadgenerator", "tools/otlp-sink"],
+  "scripts": {
+    "services": "npm run start -w demo-services",
+    "loadgen": "npm run start -w loadgenerator --",
+    "sink": "npm run start -w tools/otlp-sink"
+  }
+}
