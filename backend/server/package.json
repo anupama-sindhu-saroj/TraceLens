@@ -1,0 +1,31 @@
+{
+  "name": "server",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node --test --test-concurrency=1 \"test/*.test.js\"",
+    "test:db": "node --test test/db.test.js test/ingest.test.js",
+    "seed": "node scripts/seed.js",
+    "test:seed": "node --test test/seed.test.js",
+    "test:grpc": "node --test test/grpc.test.js",
+    "test:a": "node --test test/a-api.test.js",
+    "test:all": "node --test --test-concurrency=1 \"test/*.test.js\"",
+    "test:b": "node --test test/b-api.test.js test/live-tail.test.js test/topology.test.js",
+    "seed:ingest": "node scripts/seed.js --via mixed",
+    "test:seed-ingest": "node --test test/seed-ingest.test.js"
+  },
+  "dependencies": {
+    "@duckdb/node-api": "^1.5.6-r.1",
+    "@grpc/grpc-js": "^1.12.0",
+    "@grpc/proto-loader": "^0.7.15",
+    "cors": "^2.8.5",
+    "express": "^5.3.0",
+    "protobufjs": "^8.8.1",
+    "ws": "^8.22.0"
+  },
+  "optionalDependencies": {
+    "re2": "^1.24.1"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "observability-engine",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "backend/server",
+    "backend/demo-services",
+    "backend/loadgenerator",
+    "backend/tools/otlp-sink",
+    "mcp-server",
+    "frontend"
+  ],
+  "scripts": {
+    "server": "npm run start -w backend/server",
+    "services": "npm run start -w backend/demo-services",
+    "loadgen": "npm run start -w backend/loadgenerator --",
+    "sink": "npm run start -w backend/tools/otlp-sink",
+    "web": "npm run dev -w frontend",
+    "test": "npm run test -w backend/server",
+    "mcp": "npm run start -w mcp-server",
+    "test:mcp": "npm run test -w mcp-server"
+  }
+}
