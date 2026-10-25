@@ -3,7 +3,7 @@
 // Click a node or an arrow for its numbers and links to the traces and logs behind them. Drag nodes to rearrange them
 // (the layout is remembered). Refreshes every 5 seconds without moving anything you placed. A service that is the
 // root cause of a recent anomaly gets a red pulsing ring (data from /api/anomalies, written by the detector).
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { Background, Controls, Handle, MarkerType, MiniMap, Position, ReactFlow, ReactFlowProvider, useNodesState, useReactFlow } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
@@ -11,7 +11,6 @@ import { api } from '../lib/api.js';
 import { usePolling } from '../hooks/usePolling.js';
 import { useUrlState } from '../hooks/useUrlState.js';
 import { EmptyState, ErrorState, HealthBadge, ServiceDot, Skeleton, TIME_RANGES } from '../components/ui.jsx';
-import { serviceColor } from '../lib/serviceColor.js';
 import { fmtMs, fmtNum, fmtPct, ago } from '../lib/format.js';
 import { NODE_H, NODE_W, layout } from '../lib/topologyLayout.js';
 
@@ -241,7 +240,7 @@ export default function Topology() {
 
   const selected = useMemo(() => {
     if (!select) return null;
-    const [type, id] = select.split(':');
+    const [type] = select.split(':');
     return type === 'node' || type === 'edge' ? { type, id: select.slice(type.length + 1) } : null;
   }, [select]);
   const setSelected = useCallback((s) => setSelect(s ? `${s.type}:${s.id}` : ''), [setSelect]);

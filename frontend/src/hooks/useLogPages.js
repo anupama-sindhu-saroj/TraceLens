@@ -29,7 +29,6 @@ export function useLogPages({ firstQs, pageSize = 200, resetKey }) {
       .then(({ logs, hasMore }) => { if (seq.current === my) setState({ rows: logs, hasMore, loading: false, loadingMore: false, error: null }); })
       .catch((error) => { if (error.name !== 'AbortError' && seq.current === my) setState((s) => ({ ...s, loading: false, error })); });
     return () => ctl.abort();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [firstQs, resetKey, fetchPage]);
 
   const loadOlder = useCallback(async () => {

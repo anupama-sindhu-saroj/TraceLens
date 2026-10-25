@@ -147,3 +147,8 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+# Observability Engine: local DuckDB data (regenerate with `npm run seed -w backend/server`)
+backend/server/data/
+*.duckdb
+*.duckdb.wal

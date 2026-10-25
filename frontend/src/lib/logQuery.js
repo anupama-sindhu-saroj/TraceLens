@@ -20,7 +20,7 @@ export const SEVERITY_PRESETS = [
 const KEY_ALIASES = { service: 'service', svc: 'service', level: 'level', severity: 'level', trace: 'traceId', span: 'spanId' };
 const CANONICAL = { service: 'service', level: 'level', traceId: 'trace', spanId: 'span' }; // field -> key written back to the box
 export const BUILT_IN_KEYS = ['service', 'level', 'trace', 'span'];
-const KEY_RE = /^-?[A-Za-z_][\w.\-]*$/;
+const KEY_RE = /^-?[A-Za-z_][\w.-]*$/;
 
 // Split into tokens on whitespace, keeping "quoted phrases" and /regex literals/ (which may contain spaces) together,
 // also after a key: ( user.id:"a b"  order.id:/o- [0-9]+/ ).

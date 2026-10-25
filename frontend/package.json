@@ -1,15 +1,17 @@
 {
   "name": "frontend",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node --test src/lib/urlParams.test.js src/lib/logQuery.test.js src/lib/topologyLayout.test.js src/lib/incidents.test.js"
   },
   "dependencies": {
+    "@xyflow/react": "^12.8.4",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "react-router-dom": "^7.18.4"

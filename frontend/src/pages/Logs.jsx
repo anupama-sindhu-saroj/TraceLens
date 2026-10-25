@@ -16,7 +16,7 @@ import LogHistogram from '../components/LogHistogram.jsx';
 import QueryInput from '../components/QueryInput.jsx';
 import TagFacet from '../components/TagFacet.jsx';
 import {
-  LEVELS, LEVEL_COLORS, SEVERITY_PRESETS, isTagActive, parseQuery, parseTokens, removeTokenAt, setToken, toParams, toggleTag, toggleToken,
+  LEVELS, LEVEL_COLORS, SEVERITY_PRESETS, parseQuery, parseTokens, removeTokenAt, setToken, toParams, toggleTag, toggleToken,
 } from '../lib/logQuery.js';
 import { fmtDateTime } from '../lib/format.js';
 
