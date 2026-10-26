@@ -18,7 +18,7 @@ export default function App() {
   return (
     <>
       <nav className="nav">
-        <strong>Observability Engine</strong>
+        <strong>TraceLens</strong>
         {links.map(([to, label]) => (
           <NavLink key={to} to={to} end={to === '/'} className={({ isActive }) => (isActive ? 'active' : '')}>
             {label}
