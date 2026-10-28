@@ -12,6 +12,9 @@
 //     before, skip  cursor for the next page ("Load older"); the answer says hasMore
 //   -> { logs: [{ time_ms, service_name, level, message, trace_id, span_id, attributes }], count, hasMore }
 //   A bad regular expression or tags value answers 400 { error }.
+//   Time window guard: when `from` is missing it defaults to the last LOGS_DEFAULT_RANGE_HOURS (24) hours, and a window longer than
+//   LOGS_MAX_RANGE_HOURS (168 = 7 days) answers 400 asking to narrow it, so a bare call can never scan the whole table.
+//   Looking up one trace (traceId or spanId given) is exempt.
 //
 //   GET /api/logs/histogram?(same filters)&from=&to=&buckets=60
 //   -> { from, to, bucketMs, total, buckets: [{ t, DEBUG, INFO, WARN, ERROR }] }   (the timeline above the table)
@@ -33,6 +36,11 @@ const MAX_TAGS = 10;
 const SAMPLE_ROWS = 20_000;
 const TAG_OPS = new Set(['eq', 'ne', 're', 'has']);
 
+const HOUR_MS = 3_600_000;
+const hoursEnv = (name, d) => { const n = Number(process.env[name]); return Number.isFinite(n) && n > 0 ? n : d; };
+const DEFAULT_WINDOW_MS = hoursEnv('LOGS_DEFAULT_RANGE_HOURS', 24) * HOUR_MS;
+const MAX_WINDOW_MS = hoursEnv('LOGS_MAX_RANGE_HOURS', 168) * HOUR_MS;
+
 const bad = (message) => Object.assign(new Error(message), { status: 400 });
 const truthy = (v) => v === true || v === '1' || v === 'true';
 
@@ -51,6 +59,19 @@ function parseTags(raw) {
     if (op !== 'has' && value.length > MAX_REGEX_LEN) throw bad('tag value too long');
     return { key, op, value };
   });
+}
+
+// Applies the time window guard to the query. Returns the query with `from` filled in when it was missing.
+function withWindow(q = {}) {
+  if (q.traceId || q.spanId) return q;
+  const to = num(q.to, null);
+  let from = num(q.from, null);
+  const end = to ?? Date.now();
+  if (from === null) from = end - DEFAULT_WINDOW_MS;
+  if (end - from > MAX_WINDOW_MS) {
+    throw bad(`time range too large (max ${Math.round(MAX_WINDOW_MS / HOUR_MS)} hours). Narrow from/to, or add a traceId.`);
+  }
+  return { ...q, from };
 }
 
 const attrPath = (key) => `$."${key}"`;
@@ -115,7 +136,7 @@ router.get('/', handle(async (req, res) => {
   const limit = num(req.query.limit, 200, { min: 1, max: 1000 });
   const dir = req.query.order === 'asc' ? 'ASC' : 'DESC';
   await checkRegex(req.query);
-  const { where, params } = buildLogFilter(req.query);
+  const { where, params } = buildLogFilter(withWindow(req.query));
   // Cursor paging ("Load older"): `before` = time_ms of the last row you already have (inclusive, so rows that share
   // that millisecond are not lost) and `skip` = how many of the rows you already have carry exactly that time_ms.
   // For order=asc the same pair means "after".
@@ -138,6 +159,9 @@ router.get('/histogram', handle(async (req, res) => {
   const to = num(req.query.to, now);
   const from = num(req.query.from, to - 60 * 60_000);
   if (to <= from) return res.status(400).json({ error: 'to must be after from' });
+  if (!req.query.traceId && !req.query.spanId && to - from > MAX_WINDOW_MS) {
+    return res.status(400).json({ error: `time range too large (max ${Math.round(MAX_WINDOW_MS / HOUR_MS)} hours). Narrow from/to.` });
+  }
   const wanted = num(req.query.buckets, 60, { min: 1, max: 200 });
   // whole seconds, so the bucket size can be written straight into the SQL as an integer literal
   const bucketMs = Math.max(1000, Math.ceil((to - from) / wanted / 1000) * 1000);
@@ -166,8 +190,9 @@ router.get('/histogram', handle(async (req, res) => {
 
 router.get('/facets', handle(async (req, res) => {
   await checkRegex(req.query);
+  const windowed = withWindow(req.query);
   const facet = async (column, key) => {
-    const { where, params } = buildLogFilter(req.query, { skip: [key] });
+    const { where, params } = buildLogFilter(windowed, { skip: [key] });
     const rows = await db.query(
       `SELECT ${column} AS value, count(*) AS count FROM logs
        ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
@@ -180,7 +205,7 @@ router.get('/facets', handle(async (req, res) => {
 
 // The newest SAMPLE_ROWS logs that match the filters (attributes only), used by the two tag endpoints.
 function sample(req) {
-  const { where, params } = buildLogFilter(req.query);
+  const { where, params } = buildLogFilter(withWindow(req.query));
   where.push("attributes IS NOT NULL AND attributes <> '{}'");
   return { sql: `(SELECT attributes FROM logs WHERE ${where.join(' AND ')} ORDER BY time_ms DESC LIMIT ${SAMPLE_ROWS})`, params };
 }
@@ -204,4 +229,4 @@ router.get('/field-values', handle(async (req, res) => {
   res.json({ key, values: rows.map((r) => ({ value: r.value, count: Number(r.count) })) });
 }));
 
-module.exports = { logsRouter: router, buildLogFilter, parseTags, checkRegex };
+module.exports = { logsRouter: router, buildLogFilter, parseTags, checkRegex, withWindow };
