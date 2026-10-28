@@ -185,6 +185,9 @@ test('every successful tool answer carries structured JSON that matches its outp
       details: { bad_spans: 5, spans_in_window: 90, related_trace_ids: ['t1'] } }] } };
   routes['/api/anomalies/a1'] = { body: { id: 'a1', detected_at_ms: now, service_name: 'gateway', metric: 'p99_latency', baseline: 300, current: 1800, ratio: 6, severity: 'WARNING', root_cause: 'payment', details: {} } };
   routes['/api/anomalies/a1/explain'] = { body: { rootCause: 'payment', method: 'self-time', tracesAnalyzed: 1, votes: { payment: 1 }, evidence: {}, summary: 'payment did the slow work',
+    correlation: { summary: 'The latency spike and an error cluster belong together.', latencyWithErrors: true,
+      slowOperations: [{ service: 'payment', operation: 'POST /charge', kind: 'SERVER', baselineP99Ms: 80, currentP99Ms: 2400, ratio: 30, spans: 40, errors: 9, errorRate: 0.225, inRootCause: true }],
+      relatedAnomalies: [{ id: 'a2', service: 'payment', metric: 'error_rate', severity: 'CRITICAL', ratio: 14, rootCause: 'payment', detectedAtMs: now + 30000, offsetSec: 30, relation: 'same-cause' }] },
     samples: [{ traceId: 't1', service: 'payment', spanId: 's1', spanName: 'POST /charge', spanDurationMs: 1700, selfMs: 1500, traceDurationMs: 1900 }] } };
   routes['/api/traces'] = { body: { total: 1, traces: [{ traceId: 't1', startMs: now, durationMs: 1900, rootName: 'POST /api/checkout', rootService: 'gateway', httpStatus: 200, spanCount: 2, errorSpans: 0, services: ['gateway', 'payment'] }] } };
   routes['/api/traces/t1xxxxxxxx'] = { body: { traceId: 't1xxxxxxxx', startMs: now, durationMs: 1900, spanCount: 2, errorSpans: 0, logCount: 1, services: ['gateway', 'payment'], spans: [
@@ -210,6 +213,13 @@ test('every successful tool answer carries structured JSON that matches its outp
   const ex = (await mcp.call('explain_anomaly', { anomaly_id: 'a1' })).data;
   assert.equal(ex.rootCause, 'payment');
   assert.deepEqual(ex.votes, { payment: 1 });
+  assert.equal(ex.correlation.latencyWithErrors, true);
+  assert.equal(ex.correlation.slowOperations[0].ratio, 30);
+  assert.equal(ex.correlation.relatedAnomalies[0].relation, 'same-cause');
+  const exText = (await mcp.call('explain_anomaly', { anomaly_id: 'a1' })).text;
+  assert.match(exText, /Correlation: The latency spike and an error cluster belong together/);
+  assert.match(exText, /payment POST \/charge \[SERVER\]: p99 80 ms -> 2\.4 s \(30x\), 40 spans, 9 failed {2}<-- root-cause service/);
+  assert.match(exText, /a2: payment error_rate \[CRITICAL\].*30 s later - same root cause/);
   const trace = (await mcp.call('get_trace', { trace_id: 't1xxxxxxxx' })).data;
   assert.equal(trace.bottleneck.service, 'payment');
   assert.equal(trace.spans.find((s) => s.spanId === 'p').ownMs, 1700);

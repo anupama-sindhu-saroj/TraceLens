@@ -1,13 +1,15 @@
 // Anomalies API (features 16 to 18 backend, owner: B).
 //   GET /api/anomalies?service=&severity=&metric=&from=&to=&limit=   newest first
 //   GET /api/anomalies/:id
-//   GET /api/anomalies/:id/explain   why this root cause: { rootCause, method, tracesAnalyzed, votes, evidence, samples[], summary }
+//   GET /api/anomalies/:id/explain   why this root cause: { rootCause, method, tracesAnalyzed, votes, evidence, samples[], summary,
+//                                      correlation: { slowOperations[], relatedAnomalies[], latencyWithErrors, summary } }
 // -> { anomalies: [{ id, detected_at_ms, service_name, metric, baseline, current, ratio, severity, root_cause, details }] }
 // `details` is parsed JSON (window, baseline_window, spans_in_window, bad_spans, related_trace_ids).
 const { Router } = require('express');
 const db = require('../db');
 const { num, parseJson } = require('./util');
 const { explainRootCause } = require('../anomaly/rootcause');
+const { correlateAnomaly } = require('../anomaly/correlate');
 
 const router = Router();
 const shape = (r) => ({ ...r, details: parseJson(r.details) });
@@ -40,7 +42,8 @@ router.get('/:id/explain', async (req, res) => {
   const rows = await db.query('SELECT * FROM anomalies WHERE id = ?', [req.params.id]);
   if (!rows.length) return res.status(404).json({ error: 'anomaly not found' });
   const anomaly = shape(rows[0]);
-  res.json({ id: anomaly.id, service: anomaly.service_name, metric: anomaly.metric, storedRootCause: anomaly.root_cause, ...(await explainRootCause(anomaly)) });
+  const [why, correlation] = await Promise.all([explainRootCause(anomaly), correlateAnomaly(anomaly)]);
+  res.json({ id: anomaly.id, service: anomaly.service_name, metric: anomaly.metric, storedRootCause: anomaly.root_cause, ...why, correlation });
 });
 
 module.exports = { anomaliesRouter: router };

@@ -172,6 +172,26 @@ async function anomalyExplain(api, anomalyId) {
       out.push(`- ${s.traceId}: ${s.service} ${s.spanName} took ${F.fmtMs(s.spanDurationMs)}${s.selfMs !== null && s.selfMs !== undefined ? ` (${F.fmtMs(s.selfMs)} own time)` : ''} in a ${F.fmtMs(s.traceDurationMs)} trace`);
     }
   }
+  const cor = {
+    slowOperations: ex.correlation?.slowOperations ?? [],
+    relatedAnomalies: ex.correlation?.relatedAnomalies ?? [],
+    latencyWithErrors: Boolean(ex.correlation?.latencyWithErrors),
+    summary: ex.correlation?.summary ?? '',
+  };
+  if (cor.summary) out.push('', `Correlation: ${cor.summary}`);
+  if (cor.slowOperations.length) {
+    out.push('', 'Operations whose p99 spiked in this window (vs the 30 min baseline):');
+    for (const o of cor.slowOperations) {
+      out.push(`- ${o.service} ${o.operation}${o.kind ? ` [${o.kind}]` : ''}: p99 ${F.fmtMs(o.baselineP99Ms)} -> ${F.fmtMs(o.currentP99Ms)} (${o.ratio}x), ${o.spans} spans, ${o.errors} failed${o.inRootCause ? '  <-- root-cause service' : ''}`);
+    }
+  }
+  if (cor.relatedAnomalies.length) {
+    out.push('', 'Other alarms within 5 minutes:');
+    for (const r of cor.relatedAnomalies) {
+      const off = Math.abs(r.offsetSec) < 5 ? 'same time' : `${Math.abs(r.offsetSec)} s ${r.offsetSec < 0 ? 'earlier' : 'later'}`;
+      out.push(`- ${r.id}: ${r.service} ${r.metric} [${r.severity}]${r.ratio ? ` ${F.fmtRatio(r.ratio)}` : ''}, ${off} - ${r.relation === 'same-cause' ? 'same root cause' : r.relation === 'call-path' ? 'on the call path of the sample traces' : 'only close in time'}`);
+    }
+  }
   out.push('', 'Next: get_trace with one of the trace ids above to see the full call tree, or search_logs'
     + ` with service="${ex.rootCause ?? a.service_name}" level=["ERROR","WARN"]${w ? ` from="${F.iso(w.from_ms)}"` : ''} to read what that service logged.`);
   return {
@@ -183,6 +203,7 @@ async function anomalyExplain(api, anomalyId) {
       tracesAnalyzed: ex.tracesAnalyzed,
       votes: ex.votes ?? {},
       summary: ex.summary,
+      correlation: cor,
       samples: (ex.samples ?? []).map((s) => ({
         traceId: s.traceId, service: s.service, spanId: s.spanId, spanName: s.spanName,
         spanDurationMs: s.spanDurationMs, selfMs: s.selfMs ?? null, traceDurationMs: s.traceDurationMs,

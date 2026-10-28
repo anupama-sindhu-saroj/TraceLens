@@ -59,6 +59,18 @@ const listAnomaliesOut = {
 const explainOut = {
   ...anomalyOut.shape,
   method: z.string(), tracesAnalyzed: num, votes: z.record(z.string(), num), summary: z.string(),
+  correlation: z.object({
+    summary: z.string(),
+    latencyWithErrors: z.boolean(),
+    slowOperations: z.array(z.object({
+      service: z.string(), operation: z.string(), kind: optStr, baselineP99Ms: num, currentP99Ms: num, ratio: num,
+      spans: num, errors: num, errorRate: num, inRootCause: z.boolean(),
+    })),
+    relatedAnomalies: z.array(z.object({
+      id: z.string(), service: z.string(), metric: z.string(), severity: z.string(), ratio: optNum, rootCause: optStr,
+      detectedAtMs: num, offsetSec: num, relation: z.enum(['same-cause', 'call-path', 'concurrent']),
+    })),
+  }),
   samples: z.array(z.object({
     traceId: z.string(), service: z.string(), spanId: z.string(), spanName: z.string(),
     spanDurationMs: num, selfMs: optNum, traceDurationMs: num,
@@ -149,6 +161,8 @@ function registerTools(server, api) {
     description:
       'Explains WHY an anomaly has the root cause it has: which sample traces were examined, where in each trace the problem started '
       + '(for latency, the span that spent the most time on its own work; for errors, the deepest failing span) and how many traces voted for each service. '
+      + 'It also correlates: which operations had their p99 spike in that window (and how many of their spans failed), and which other alarms '
+      + 'fired within 5 minutes and how they relate (same root cause, same call path, or only close in time). '
       + 'Pass an id from list_anomalies.',
     inputSchema: { anomaly_id: z.string().min(1).describe('Anomaly id, e.g. det-payment-p99_latency-1761220500000.') },
     outputSchema: explainOut,

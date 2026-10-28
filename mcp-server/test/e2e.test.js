@@ -52,6 +52,7 @@ test('anomalies: list, then explain, then trace, then logs - the whole investiga
   assert.match(ex.text, /Root cause: payment {2}\(the alarm was raised on gateway/);
   assert.match(ex.text, /Votes: payment 3\/3/);
   assert.ok(ex.text.includes(sampleTrace), 'sample trace ids are given');
+  assert.match(ex.text, /Correlation: /);
 
   const tr = await mcp.call('get_trace', { trace_id: sampleTrace });
   assert.equal(tr.isError, false);
@@ -129,6 +130,8 @@ test('structured output from the real backend: same facts as the text, valid aga
   assert.equal(ex.rootCause, 'payment');
   assert.equal(ex.method, 'self-time');
   assert.ok(ex.samples.length >= 1);
+  assert.ok(Array.isArray(ex.correlation.slowOperations) && Array.isArray(ex.correlation.relatedAnomalies));
+  assert.equal(typeof ex.correlation.summary, 'string');
 
   const tr = (await mcp.call('get_trace', { trace_id: sampleTrace })).data;
   assert.equal(tr.bottleneck.service, 'payment');

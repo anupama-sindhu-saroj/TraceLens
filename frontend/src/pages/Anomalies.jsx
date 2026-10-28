@@ -15,6 +15,53 @@ const RANGES = [['1h', 60], ['6h', 360], ['24h', 1440], ['7d', 10080]];
 const POLL_MS = 10_000;
 const val = (metric, v) => (v === null || v === undefined ? '-' : metric === 'error_rate' ? fmtPct(v) : fmtMs(v));
 
+const RELATION_LABEL = { 'same-cause': 'same root cause', 'call-path': 'on the call path', concurrent: 'only close in time' };
+const offset = (s) => (Math.abs(s) < 5 ? 'same time' : `${Math.abs(s) >= 90 ? `${Math.round(Math.abs(s) / 60)} min` : `${Math.abs(s)} s`} ${s < 0 ? 'earlier' : 'later'}`);
+
+// Which spans spiked, and which other alarms belong to the same incident (the "p99 spiked during an error cluster" part).
+function Correlation({ c }) {
+  if (!c) return null;
+  const ops = c.slowOperations ?? [];
+  const rel = c.relatedAnomalies ?? [];
+  return (
+    <div className="an-corr">
+      <h4>Spans whose p99 spiked</h4>
+      {c.summary && <p className="an-summary">{c.summary}</p>}
+      {ops.length > 0 && (
+        <table className="table compact an-samples">
+          <thead><tr><th>Operation</th><th>Normal p99</th><th>Now</th><th>Change</th><th>Spans</th><th>Failed</th></tr></thead>
+          <tbody>
+            {ops.map((o) => (
+              <tr key={`${o.service}|${o.operation}|${o.kind}`} className={o.inRootCause ? 'an-hot' : ''}>
+                <td><ServiceDot name={o.service} />{o.service} <span className="muted small">{o.operation}{o.kind ? ` · ${o.kind.toLowerCase()}` : ''}</span></td>
+                <td>{fmtMs(o.baselineP99Ms)}</td>
+                <td>{fmtMs(o.currentP99Ms)}</td>
+                <td><span className="an-ratio">{o.ratio}×</span></td>
+                <td>{fmtNum(o.spans)}</td>
+                <td>{o.errors > 0 ? <span className={o.errorRate >= 0.05 ? 'an-ratio' : 'muted'}>{fmtNum(o.errors)} ({fmtPct(o.errorRate)})</span> : <span className="muted">0</span>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {rel.length > 0 && (
+        <>
+          <h4>Other alarms around the same time</h4>
+          <div className="an-rel">
+            {rel.map((r) => (
+              <div key={r.id} className="an-relrow">
+                <ServiceDot name={r.service} />{r.service} {METRIC_LABEL[r.metric] ?? r.metric}
+                <span className={`badge ${r.severity === 'CRITICAL' ? 'red' : 'amber'}`}>{r.severity}</span>
+                <span className="muted small">{offset(r.offsetSec)} · {RELATION_LABEL[r.relation] ?? r.relation}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function Why({ id }) {
   const { data, error, loading } = usePolling((signal) => api(`/api/anomalies/${encodeURIComponent(id)}/explain`, { signal }), 0, [id]);
   if (loading) return <div className="muted small">Working out why…</div>;
@@ -48,6 +95,7 @@ function Why({ id }) {
           </tbody>
         </table>
       )}
+      <Correlation c={data.correlation} />
       <div className="muted small">Method: {data.method === 'self-time' ? 'the service with the most time spent on its own work (not waiting for others) wins the vote' : 'the deepest failing span, whose callees did not fail, wins the vote'}.</div>
     </div>
   );

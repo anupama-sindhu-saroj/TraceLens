@@ -173,4 +173,4 @@ async function explainRootCause(anomaly) {
   return explainTraces(await loadTraces(ids), anomaly.metric, anomaly.service_name);
 }
 
-module.exports = { findRootCause, analyzeTraces, latencyOrigin, errorOrigin, explainTraces, explainRootCause };
+module.exports = { findRootCause, analyzeTraces, latencyOrigin, errorOrigin, explainTraces, explainRootCause, loadTraces };

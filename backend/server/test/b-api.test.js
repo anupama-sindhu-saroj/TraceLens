@@ -183,3 +183,76 @@ test('root cause (errors): the failing callee is blamed even with non-failing sp
   // no errors at all -> no origin
   assert.equal(errorOrigin([sp('a', null, 'cart', 'GET', 'SERVER', 200, 'UNSET', 0)]), null);
 });
+
+// ---- correlation: which operations spiked, which alarms belong together --------------------------------------------------
+test('correlate: rankOperations keeps only real p99 spikes, root-cause service first', () => {
+  const { rankOperations } = require('../src/anomaly/correlate');
+  const row = (service_name, name, n, p99, errors = 0, kind = 'SERVER') => ({ service_name, name, kind, n, p99, errors });
+  const base = [row('payment', 'POST /charge', 200, 80), row('gateway', 'POST /api/checkout', 200, 120), row('cart', 'GET /cart', 200, 40), row('inventory', 'POST /reserve', 200, 60), row('search', 'GET /q', 200, 20)];
+  const cur = [
+    row('payment', 'POST /charge', 40, 2400, 14),   // spiked, and failing
+    row('gateway', 'POST /api/checkout', 40, 2600),  // spiked (victim)
+    row('cart', 'GET /cart', 40, 70),                // +75% only
+    row('inventory', 'POST /reserve', 3, 5000),      // too few spans
+    row('search', 'GET /q', 40, 45),                 // doubled but under the 50 ms floor
+    row('brand-new', 'GET /x', 40, 900),             // no baseline
+  ];
+  const r = rankOperations(cur, base, 'payment');
+  assert.deepEqual(r.map((x) => `${x.service} ${x.operation}`), ['payment POST /charge', 'gateway POST /api/checkout']);
+  assert.equal(r[0].inRootCause, true);
+  assert.equal(r[0].ratio, 30);
+  assert.equal(r[0].errors, 14);
+  assert.equal(r[1].inRootCause, false);
+  assert.deepEqual(rankOperations([], [], 'payment'), []);
+});
+
+test('correlate: linkAnomalies tags relation, ignores far-away and itself', () => {
+  const { linkAnomalies, LINK_MS } = require('../src/anomaly/correlate');
+  const mk = (id, service_name, metric, root_cause, t, severity = 'CRITICAL') => ({ id, service_name, metric, root_cause, detected_at_ms: t, severity, ratio: 10 });
+  const t0 = 1_000_000_000;
+  const me = mk('a', 'payment', 'p99_latency', 'payment', t0);
+  const r = linkAnomalies(me, [
+    me,
+    mk('b', 'payment', 'error_rate', 'payment', t0 + 20_000),   // same cause
+    mk('c', 'gateway', 'p99_latency', 'payment', t0 - 5_000),   // same cause (symptom)
+    mk('d', 'cart', 'p99_latency', 'cart', t0 + 60_000),        // on the call path
+    mk('e', 'search', 'error_rate', 'search', t0 + 90_000),     // only close in time
+    mk('f', 'payment', 'error_rate', 'payment', t0 + LINK_MS + 1), // too far away
+  ], new Set(['gateway', 'cart', 'payment']));
+  assert.deepEqual(r.map((x) => [x.id, x.relation]), [['c', 'same-cause'], ['b', 'same-cause'], ['d', 'call-path'], ['e', 'concurrent']]);
+  assert.equal(r[0].offsetSec, -5);
+  assert.equal(r[1].offsetSec, 20);
+});
+
+test('correlate: buildCorrelation says when a latency spike came with an error cluster', () => {
+  const { buildCorrelation } = require('../src/anomaly/correlate');
+  const me = { id: 'a', service_name: 'payment', metric: 'p99_latency', root_cause: 'payment', detected_at_ms: 1000 };
+  const err = { id: 'b', service_name: 'payment', metric: 'error_rate', root_cause: 'payment', detected_at_ms: 31_000, severity: 'CRITICAL', ratio: 14 };
+  const cur = [{ service_name: 'payment', name: 'POST /charge', kind: 'SERVER', n: 40, p99: 2400, errors: 9 }];
+  const base = [{ service_name: 'payment', name: 'POST /charge', kind: 'SERVER', n: 300, p99: 80, errors: 0 }];
+  const c = buildCorrelation(me, cur, base, [err], new Set(['payment']));
+  assert.equal(c.latencyWithErrors, true);
+  assert.match(c.summary, /latency spike and an error cluster belong together: payment error rate alarm \(CRITICAL, 14x\) fired 30 s later/);
+  assert.match(c.summary, /worst is payment POST \/charge \(p99 80 ms -> 2\.4 s, 30x\), and 1 of them also had failures/);
+  const alone = buildCorrelation(me, [], [], [], new Set());
+  assert.equal(alone.latencyWithErrors, false);
+  assert.match(alone.summary, /No single operation shows a p99 spike/);
+});
+
+test('correlate: /explain returns the correlation for a real incident', async () => {
+  await reset();
+  await load(generate({ now: Date.now(), minutes: 60, flowsPerMin: 20, incidentMinutes: 6, anomalies: false }));
+  const found = await runDetection();
+  const gw = found.find((a) => a.service_name === 'gateway' && a.metric === 'p99_latency');
+  assert.ok(gw);
+  const { body } = await get(`/api/anomalies/${encodeURIComponent(gw.id)}/explain`);
+  const c = body.correlation;
+  assert.ok(c, 'explain has a correlation block');
+  const pay = c.slowOperations.find((o) => o.service === 'payment');
+  assert.ok(pay, `payment operation listed: ${JSON.stringify(c.slowOperations)}`);
+  assert.equal(pay.inRootCause, true);
+  assert.ok(pay.ratio >= 2 && pay.currentP99Ms > pay.baselineP99Ms);
+  assert.equal(c.slowOperations[0].service, 'payment', 'root-cause service listed first');
+  assert.ok(c.relatedAnomalies.some((r) => r.service === 'payment' && r.relation === 'same-cause'), JSON.stringify(c.relatedAnomalies));
+  assert.ok(typeof c.summary === 'string' && c.summary.length > 20);
+});
