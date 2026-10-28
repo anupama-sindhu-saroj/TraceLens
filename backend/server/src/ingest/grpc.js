@@ -10,7 +10,7 @@
 const path = require('node:path');
 const grpc = require('@grpc/grpc-js');
 const protoLoader = require('@grpc/proto-loader');
-const { parseTraces, parseLogs } = require('./otlp-parser');
+const { parseTracesDetailed, parseLogs } = require('./otlp-parser');
 const { batcher } = require('./batcher');
 
 const PROTO_DIR = path.join(__dirname, '..', '..', 'proto');
@@ -41,24 +41,28 @@ function loadProto() {
   return { TraceService: pkg.trace.v1.TraceService, LogsService: pkg.logs.v1.LogsService };
 }
 
-// Back-pressure: if the batcher backlog is full, tell the exporter to retry later instead of silently dropping.
+// Back-pressure: if the whole request does not fit in the batcher backlog, tell the exporter to retry later instead of
+// silently dropping part of it (batcher.enqueue() takes all rows or none).
 // UNAVAILABLE is used (not RESOURCE_EXHAUSTED) because OTLP exporters retry UNAVAILABLE with backoff by default,
 // while RESOURCE_EXHAUSTED is only retried when the server sends RetryInfo.
-const isOverloaded = (table) => batcher.stats().queued[table] >= batcher.maxQueue;
-
 function exportHandler(table, parse, noun) {
   return (call, callback) => {
-    if (isOverloaded(table)) {
-      return callback({ code: grpc.status.UNAVAILABLE, message: `ingest queue full, retry later (${table})` });
-    }
-    let rows;
+    let parsed;
     try {
-      rows = parse(call.request);
+      parsed = parse(call.request);
     } catch (e) {
       return callback({ code: grpc.status.INVALID_ARGUMENT, message: `invalid OTLP ${noun} payload: ${e.message}` });
     }
-    batcher.enqueue(table, rows);
-    callback(null, {}); // success = empty ExportServiceResponse (no partial_success)
+    if (!batcher.enqueue(table, parsed.rows)) {
+      return callback({ code: grpc.status.UNAVAILABLE, message: `ingest queue full, retry later (${table})` });
+    }
+    if (parsed.rejected) { // OTLP partial_success: tell the exporter some records were malformed (do not retry those)
+      const errorMessage = `${parsed.rejected} ${noun} rejected: invalid trace/span id`;
+      return callback(null, table === 'spans'
+        ? { partialSuccess: { rejectedSpans: parsed.rejected, errorMessage } }
+        : { partialSuccess: { rejectedLogRecords: parsed.rejected, errorMessage } });
+    }
+    callback(null, {}); // success = empty ExportServiceResponse
   };
 }
 
@@ -71,8 +75,8 @@ function exportHandler(table, parse, noun) {
 function startGrpcIngest({ port = Number(process.env.OTLP_GRPC_PORT ?? 4317), host = process.env.OTLP_GRPC_HOST ?? '0.0.0.0' } = {}) {
   const { TraceService, LogsService } = loadProto();
   const server = new grpc.Server({ 'grpc.max_receive_message_length': MAX_MESSAGE_BYTES });
-  server.addService(TraceService.service, { Export: exportHandler('spans', parseTraces, 'traces') });
-  server.addService(LogsService.service, { Export: exportHandler('logs', parseLogs, 'logs') });
+  server.addService(TraceService.service, { Export: exportHandler('spans', parseTracesDetailed, 'spans') });
+  server.addService(LogsService.service, { Export: exportHandler('logs', (r) => ({ rows: parseLogs(r), rejected: 0 }), 'logs') });
 
   return new Promise((resolve, reject) => {
     server.bindAsync(`${host}:${port}`, grpc.ServerCredentials.createInsecure(), (err, boundPort) => {

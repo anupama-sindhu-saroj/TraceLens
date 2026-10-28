@@ -114,10 +114,14 @@ function appendValue(appender, type, v) {
 
 // Bulk insert via the Appender (much faster than INSERT per row). rows = array of objects keyed by column name.
 // http_status is INTEGER in the table; DuckDB casts the appended BIGINT automatically.
-function bulkInsert(table, rows) {
+function bulkInsert(table, rows, prepare) {
   if (!rows || rows.length === 0) return Promise.resolve(0);
   const cols = TABLES[table];
   return serial(async () => {
+    if (prepare) {
+      rows = await prepare(rows);
+      if (rows.length === 0) return 0;
+    }
     const appender = await requireConn().createAppender(table);
     try {
       for (const row of rows) {
@@ -137,7 +141,29 @@ function bulkInsert(table, rows) {
   });
 }
 
-const insertSpans = (rows) => bulkInsert('spans', rows);
+// Idempotent span insert: a span is identified by (trace_id, span_id). Duplicates inside the batch and spans that are
+// already stored are skipped, so an exporter retry (or the batcher retrying a write whose outcome is unknown) cannot
+// create duplicate spans. First stored version wins. Set DEDUP_SPANS=0 to turn this off.
+// Runs inside serial(), so it uses the connection directly (calling query() here would deadlock).
+async function dropDuplicateSpans(rows) {
+  const seen = new Set();
+  const unique = [];
+  for (const r of rows) {
+    const key = `${r.trace_id}/${r.span_id}`;
+    if (!seen.has(key)) { seen.add(key); unique.push(r); }
+  }
+  const traceIds = [...new Set(unique.map((r) => r.trace_id))];
+  const stored = new Set();
+  for (let i = 0; i < traceIds.length; i += 200) {
+    const chunk = traceIds.slice(i, i + 200);
+    const reader = await requireConn().runAndReadAll(
+      `SELECT trace_id, span_id FROM spans WHERE trace_id IN (${chunk.map(() => '?').join(',')})`, chunk);
+    for (const r of reader.getRowObjects()) stored.add(`${r.trace_id}/${r.span_id}`);
+  }
+  return unique.filter((r) => !stored.has(`${r.trace_id}/${r.span_id}`));
+}
+
+const insertSpans = (rows) => bulkInsert('spans', rows, process.env.DEDUP_SPANS === '0' ? undefined : dropDuplicateSpans);
 const insertLogs = (rows) => bulkInsert('logs', rows);
 const insertAnomalies = (rows) => bulkInsert('anomalies', rows);
 

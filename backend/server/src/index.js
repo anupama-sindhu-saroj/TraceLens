@@ -48,7 +48,13 @@ db.init().then(async () => {
   const grpcIngest = await startGrpcIngest();
   const server = app.listen(PORT, () => console.log(`[server] API listening on :${PORT}`));
   const liveTail = attachLiveTail(server, { batcher });
-  const shutdown = async () => { await liveTail.close(); server.close(); detector.stop(); if (retention) retention.stop(); ingest.close(); await grpcIngest.close(); await batcher.stop(); await db.close(); process.exit(0); };
+  let shuttingDown = false;
+  const shutdown = async () => { if (shuttingDown) return; shuttingDown = true;
+    // hard deadline so a stuck connection can't hang the process forever
+    setTimeout(() => process.exit(1), 10_000).unref();
+    await liveTail.close(); detector.stop(); if (retention) retention.stop();
+    // stop taking new telemetry first (wait for in-flight HTTP/gRPC requests), THEN flush the batcher and close the DB
+    await Promise.all([new Promise((r) => server.close(() => r())), new Promise((r) => ingest.close(() => r())), grpcIngest.close()]); await batcher.stop(); await db.close(); process.exit(0); };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 }).catch((e) => { console.error('[server] db init failed:', e); process.exit(1); });

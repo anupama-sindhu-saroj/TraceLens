@@ -40,6 +40,9 @@ function nanos(v) {
   if (typeof v === 'object' && 'low' in v) return (BigInt(v.high >>> 0) << 32n) | BigInt(v.low >>> 0);
   try { return BigInt(v); } catch { return 0n; }
 }
+// Strict OTLP id check: trace id = 32 hex chars, span id = 16 hex chars (idHex already lowercases / nulls all-zero).
+const isHexId = (id, len) => typeof id === 'string' && id.length === len && /^[0-9a-f]+$/.test(id);
+
 const nsToMs = (ns) => Number(ns / 1000n) / 1000; // keeps sub-ms precision
 
 function anyValue(v) {
@@ -87,15 +90,22 @@ function enumName(v, names, prefix) {
 
 // ---- parsers ---------------------------------------------------------------
 
-function parseTraces(req) {
+// Returns { rows, rejected }: spans with a missing / malformed trace id, span id or parent id are counted in `rejected`
+// (so the receiver can report OTLP partial_success) instead of vanishing silently.
+function parseTracesDetailed(req) {
   const rows = [];
+  let rejected = 0;
   for (const rs of req?.resourceSpans ?? []) {
     const service = serviceOf(rs.resource);
     for (const ss of rs.scopeSpans ?? []) {
       for (const sp of ss.spans ?? []) {
         const traceId = idHex(sp.traceId);
         const spanId = idHex(sp.spanId);
-        if (!traceId || !spanId) continue; // invalid span, skip
+        const parentId = idHex(sp.parentSpanId);
+        if (!isHexId(traceId, 32) || !isHexId(spanId, 16) || (parentId !== null && !isHexId(parentId, 16))) {
+          rejected++;
+          continue;
+        }
         const start = nanos(sp.startTimeUnixNano);
         const end = nanos(sp.endTimeUnixNano);
         const attrs = attrsToObject(sp.attributes);
@@ -104,7 +114,7 @@ function parseTraces(req) {
         rows.push({
           trace_id: traceId,
           span_id: spanId,
-          parent_span_id: idHex(sp.parentSpanId),
+          parent_span_id: parentId,
           service_name: service,
           name: sp.name || '(unnamed)',
           kind: kind === 'UNSPECIFIED' ? null : kind,
@@ -117,7 +127,15 @@ function parseTraces(req) {
       }
     }
   }
-  return rows;
+  return { rows, rejected };
+}
+
+const parseTraces = (req) => parseTracesDetailed(req).rows;
+
+// Protobuf bytes for an ExportTraceServiceResponse that reports rejected spans (OTLP partial_success).
+const TraceRes = root.lookupType('opentelemetry.proto.collector.trace.v1.ExportTraceServiceResponse');
+function encodeTraceResponse(rejected, errorMessage) {
+  return Buffer.from(TraceRes.encode(TraceRes.create({ partialSuccess: { rejectedSpans: rejected, errorMessage } })).finish());
 }
 
 function parseLogs(req) {
@@ -143,4 +161,4 @@ function parseLogs(req) {
   return rows;
 }
 
-module.exports = { parseTraces, parseLogs, decodeTraces, decodeLogs, root };
+module.exports = { parseTraces, parseTracesDetailed, encodeTraceResponse, parseLogs, decodeTraces, decodeLogs, root };
