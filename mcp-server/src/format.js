@@ -110,9 +110,34 @@ function logLine(l, { withTrace = false } = {}) {
   return `${iso(l.time_ms)} ${String(l.level).padEnd(5)} ${l.service_name}  ${clip(l.message, 300)}${attrs ? `  {${attrs}}` : ''}${withTrace && l.trace_id ? `  trace=${l.trace_id}` : ''}`;
 }
 
-function renderTrace(trace, logsResult, { maxSpans = 80, maxLogs = 30, now = Date.now() } = {}) {
+// Which spans are the bottleneck of a trace. Spans doing the same thing (for example five sequential POST /reserve calls)
+// are judged together: a slow call that repeats is the bottleneck even when each single call is a small share of the trace.
+// Returns { self (spanId -> own ms), hotGroups (most own time first), topGroup, flagged (span ids), firstFlaggedId }.
+function analyzeTrace(trace) {
   const spans = trace.spans ?? [];
   const self = selfTimes(spans);
+  const order = (x, y) => x.startMs - y.startMs || x.spanId.localeCompare(y.spanId);
+  const groups = new Map();
+  for (const sp of spans) {
+    const key = `${sp.serviceName} ${sp.name}`;
+    const g = groups.get(key) ?? { key, service: sp.serviceName, name: sp.name, spans: [], total: 0 };
+    g.spans.push(sp);
+    g.total += self.get(sp.spanId) ?? 0;
+    groups.set(key, g);
+  }
+  const hotGroups = [...groups.values()].filter((g) => g.total > 0).sort((x, y) => y.total - x.total);
+  const topGroup = hotGroups[0] ?? null;
+  const flagged = new Set();
+  let firstFlaggedId = null;
+  if (spans.length > 1 && topGroup && topGroup.total >= 0.3 * trace.durationMs) {
+    for (const sp of topGroup.spans) flagged.add(sp.spanId);
+    firstFlaggedId = [...topGroup.spans].sort(order)[0].spanId;
+  }
+  return { self, hotGroups, topGroup, flagged, firstFlaggedId };
+}
+
+function renderTrace(trace, logsResult, { maxSpans = 80, maxLogs = 30, now = Date.now() } = {}) {
+  const spans = trace.spans ?? [];
   const byParent = new Map();
   const roots = [];
   for (const s of spans) {
@@ -125,24 +150,8 @@ function renderTrace(trace, logsResult, { maxSpans = 80, maxLogs = 30, now = Dat
   roots.sort(order);
   for (const list of byParent.values()) list.sort(order);
 
-  // Spans doing the same thing (for example five sequential POST /reserve calls) are judged together: a slow call that
-  // repeats is the bottleneck even when each single call is only a small share of the trace.
-  const groups = new Map();
-  for (const sp of spans) {
-    const key = `${sp.serviceName} ${sp.name}`;
-    const g = groups.get(key) ?? { key, spans: [], total: 0 };
-    g.spans.push(sp);
-    g.total += self.get(sp.spanId) ?? 0;
-    groups.set(key, g);
-  }
-  const hotGroups = [...groups.values()].filter((g) => g.total > 0).sort((x, y) => y.total - x.total);
-  const topGroup = hotGroups[0];
-  const flagged = new Set();
-  const withAttrs = new Set(); // flagged spans get an attributes line only once per group, to keep repeats short
-  if (spans.length > 1 && topGroup && topGroup.total >= 0.3 * trace.durationMs) {
-    for (const sp of topGroup.spans) flagged.add(sp.spanId);
-    withAttrs.add([...topGroup.spans].sort(order)[0].spanId);
-  }
+  const { self, hotGroups, topGroup, flagged, firstFlaggedId } = analyzeTrace(trace);
+  const withAttrs = new Set(firstFlaggedId ? [firstFlaggedId] : []); // flagged spans get an attributes line once per group
 
   const lines = [];
   lines.push(`Trace ${trace.traceId}`);
@@ -199,4 +208,4 @@ function renderTrace(trace, logsResult, { maxSpans = 80, maxLogs = 30, now = Dat
   return lines.join('\n');
 }
 
-module.exports = { iso, fmtMs, fmtPct, fmtNum, fmtRatio, ago, clip, attrsInline, spanAttrs, table, selfTimes, isErrorSpan, pickLogs, logLine, renderTrace };
+module.exports = { iso, fmtMs, fmtPct, fmtNum, fmtRatio, ago, clip, attrsInline, spanAttrs, table, selfTimes, analyzeTrace, isErrorSpan, pickLogs, logLine, renderTrace };

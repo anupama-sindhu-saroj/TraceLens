@@ -112,3 +112,47 @@ test('topology: edges with health, and the unhealthy callee is named', async () 
   assert.match(r.text, /cart -> inventory/);
   assert.match(r.text, /Unhealthy: .*payment \(failing\)/);
 });
+
+test('structured output from the real backend: same facts as the text, valid against the schemas', async () => {
+  const health = (await mcp.call('get_service_health', {})).data;
+  const payment = health.services.find((x) => x.service === 'payment');
+  assert.equal(payment.health, 'failing');
+  assert.ok(payment.p99LatencyMs > 1000);
+  assert.ok(health.needsAttention.some((x) => x.service === 'payment'));
+
+  const an = (await mcp.call('list_anomalies', { minutes: 120 })).data;
+  assert.equal(an.count, 3);
+  assert.ok(an.anomalies.every((a) => a.rootCause === 'payment'));
+
+  const ex = (await mcp.call('explain_anomaly', { anomaly_id: 'seed-gateway-p99' })).data;
+  assert.equal(ex.service, 'gateway');
+  assert.equal(ex.rootCause, 'payment');
+  assert.equal(ex.method, 'self-time');
+  assert.ok(ex.samples.length >= 1);
+
+  const tr = (await mcp.call('get_trace', { trace_id: sampleTrace })).data;
+  assert.equal(tr.bottleneck.service, 'payment');
+  assert.ok(tr.spans.some((s) => s.service === 'payment' && s.attributes['fault.injected'] === true));
+  assert.ok(tr.spans.every((s) => typeof s.ownMs === 'number'));
+  assert.ok(tr.logs.length > 0);
+
+  const topo = (await mcp.call('get_topology', { minutes: 60 })).data;
+  assert.ok(topo.edges.some((e) => e.source === 'gateway' && e.target === 'payment' && e.health === 'failing'));
+  assert.ok(topo.unhealthy.some((u) => u.service === 'payment' && u.affectedCallers.includes('gateway')));
+
+  const logs = (await mcp.call('search_logs', { service: 'payment', level: ['ERROR'], minutes: 120, limit: 5 })).data;
+  assert.ok(logs.count > 0 && logs.logs.every((l) => l.level === 'ERROR' && l.service === 'payment'));
+  assert.equal(logs.levels.ERROR, logs.count);
+
+  const traces = (await mcp.call('search_traces', { status: 'error', minutes: 120, limit: 3 })).data;
+  assert.ok(traces.traces.length > 0 && traces.traces.every((t) => t.errorSpans > 0));
+});
+
+test('resources read from the real backend', async () => {
+  const health = await mcp.client.readResource({ uri: 'tracelens://health' });
+  assert.match(health.contents[0].text, /payment {2,}FAILING/);
+  const an = await mcp.client.readResource({ uri: 'tracelens://anomalies' });
+  assert.match(an.contents[0].text, /seed-payment-p99/);
+  const trace = await mcp.client.readResource({ uri: `tracelens://trace/${sampleTrace}` });
+  assert.match(trace.contents[0].text, /<-- most own time/);
+});

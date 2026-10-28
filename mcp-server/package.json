@@ -2,13 +2,14 @@
   "name": "mcp-server",
   "private": true,
   "version": "0.1.0",
-  "description": "MCP server: lets an AI agent query the observability engine (traces, logs, health, anomalies, topology) through its REST API.",
+  "description": "MCP server (stdio and Streamable HTTP): lets an AI agent query TraceLens (traces, logs, health, anomalies, topology) through its REST API.",
   "main": "src/server.js",
   "bin": {
     "observability-mcp": "src/index.js"
   },
   "scripts": {
     "start": "node src/index.js",
+    "start:http": "node src/index.js --http",
     "test": "node --test --test-concurrency=1 \"test/*.test.js\"",
     "smoke": "node scripts/smoke.js"
   },

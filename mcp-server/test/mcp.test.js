@@ -169,3 +169,70 @@ test('a backend that is down gives an actionable message', async () => {
     assert.match(r.text, /npm run server/);
   } finally { await dead.close(); }
 });
+
+test('server identity and instructions', async () => {
+  const v = mcp.client.getServerVersion();
+  assert.equal(v.name, 'tracelens');
+  assert.match(mcp.client.getInstructions(), /structured JSON/);
+});
+
+test('every successful tool answer carries structured JSON that matches its outputSchema', async () => {
+  const now = Date.now();
+  routes['/api/stats/services'] = { body: { services: [
+    { service: 'payment', requests: 100, errors: 20, errorRate: 0.2, avgLatencyMs: 900, p99LatencyMs: 1800, lastSeenMs: now, health: 'failing' }] } };
+  routes['/api/anomalies'] = { body: { anomalies: [
+    { id: 'a1', detected_at_ms: now, service_name: 'payment', metric: 'p99_latency', baseline: 250, current: 1800, ratio: 7.2, severity: 'CRITICAL', root_cause: 'payment',
+      details: { bad_spans: 5, spans_in_window: 90, related_trace_ids: ['t1'] } }] } };
+  routes['/api/anomalies/a1'] = { body: { id: 'a1', detected_at_ms: now, service_name: 'gateway', metric: 'p99_latency', baseline: 300, current: 1800, ratio: 6, severity: 'WARNING', root_cause: 'payment', details: {} } };
+  routes['/api/anomalies/a1/explain'] = { body: { rootCause: 'payment', method: 'self-time', tracesAnalyzed: 1, votes: { payment: 1 }, evidence: {}, summary: 'payment did the slow work',
+    samples: [{ traceId: 't1', service: 'payment', spanId: 's1', spanName: 'POST /charge', spanDurationMs: 1700, selfMs: 1500, traceDurationMs: 1900 }] } };
+  routes['/api/traces'] = { body: { total: 1, traces: [{ traceId: 't1', startMs: now, durationMs: 1900, rootName: 'POST /api/checkout', rootService: 'gateway', httpStatus: 200, spanCount: 2, errorSpans: 0, services: ['gateway', 'payment'] }] } };
+  routes['/api/traces/t1xxxxxxxx'] = { body: { traceId: 't1xxxxxxxx', startMs: now, durationMs: 1900, spanCount: 2, errorSpans: 0, logCount: 1, services: ['gateway', 'payment'], spans: [
+    { spanId: 'g', parentSpanId: null, missingParent: false, serviceName: 'gateway', name: 'POST /api/checkout', kind: 'SERVER', startMs: now, offsetMs: 0, durationMs: 1900, statusCode: 'UNSET', httpStatus: 200, attributes: {} },
+    { spanId: 'p', parentSpanId: 'g', missingParent: false, serviceName: 'payment', name: 'POST /charge', kind: 'SERVER', startMs: now + 10, offsetMs: 10, durationMs: 1700, statusCode: 'UNSET', httpStatus: 200, attributes: { 'fault.injected': true } }] } };
+  routes['/api/logs'] = { body: { logs: [{ time_ms: now, service_name: 'payment', level: 'ERROR', message: 'boom', trace_id: 't1xxxxxxxx', span_id: null, attributes: { 'user.id': 'u1' } }], count: 1, hasMore: false } };
+  routes['/api/topology'] = { body: { nodes: [{ service: 'payment', health: 'failing', entry: false, requests: 100, rps: 1, errors: 20, errorRate: 0.2, avgMs: 900, p50Ms: 800, p95Ms: 1700, p99Ms: 1800, lastSeenMs: now }],
+    edges: [{ source: 'gateway', target: 'payment', health: 'failing', calls: 100, rps: 1, errors: 20, errorRate: 0.2, avgMs: 900, p50Ms: 800, p95Ms: 1700, p99Ms: 1800 }] } };
+
+  const calls2 = [
+    ['get_service_health', {}], ['list_anomalies', {}], ['explain_anomaly', { anomaly_id: 'a1' }], ['search_traces', {}],
+    ['get_trace', { trace_id: 't1xxxxxxxx' }], ['search_logs', {}], ['get_topology', {}],
+  ];
+  for (const [name, args] of calls2) {
+    const r = await mcp.call(name, args);
+    assert.equal(r.isError, false, `${name}: ${r.text}`);
+    assert.ok(r.data && typeof r.data === 'object', `${name} has structuredContent`);
+  }
+  const health = (await mcp.call('get_service_health', {})).data;
+  assert.equal(health.services[0].service, 'payment');
+  assert.deepEqual(health.needsAttention, [{ service: 'payment', health: 'failing' }]);
+  assert.equal(health.anomalies[0].rootCause, 'payment');
+  const ex = (await mcp.call('explain_anomaly', { anomaly_id: 'a1' })).data;
+  assert.equal(ex.rootCause, 'payment');
+  assert.deepEqual(ex.votes, { payment: 1 });
+  const trace = (await mcp.call('get_trace', { trace_id: 't1xxxxxxxx' })).data;
+  assert.equal(trace.bottleneck.service, 'payment');
+  assert.equal(trace.spans.find((s) => s.spanId === 'p').ownMs, 1700);
+  assert.equal(trace.logs[0].attributes['user.id'], 'u1');
+  const topo = (await mcp.call('get_topology', {})).data;
+  assert.deepEqual(topo.unhealthy, [{ service: 'payment', health: 'failing', affectedCallers: ['gateway'] }]);
+});
+
+test('resources: three fixed documents and a trace template, readable as text', async () => {
+  const { resources } = await mcp.client.listResources();
+  assert.deepEqual(resources.map((r) => r.uri).sort(), ['tracelens://anomalies', 'tracelens://health', 'tracelens://topology']);
+  const { resourceTemplates } = await mcp.client.listResourceTemplates();
+  assert.deepEqual(resourceTemplates.map((t) => t.uriTemplate), ['tracelens://trace/{traceId}']);
+
+  routes['/api/stats/services'] = { body: { services: [
+    { service: 'cart', requests: 10, errors: 0, errorRate: 0, avgLatencyMs: 20, p99LatencyMs: 40, lastSeenMs: Date.now(), health: 'healthy' }] } };
+  const h = await mcp.client.readResource({ uri: 'tracelens://health' });
+  assert.equal(h.contents[0].mimeType, 'text/plain');
+  assert.match(h.contents[0].text, /cart {2,}HEALTHY/);
+
+  routes['/api/traces/abcdef0123456789'] = { body: { traceId: 'abcdef0123456789', startMs: Date.now(), durationMs: 5, spanCount: 1, errorSpans: 0, logCount: 0, services: ['gateway'], spans: [
+    { spanId: 's1', parentSpanId: null, missingParent: false, serviceName: 'gateway', name: 'GET /', kind: 'SERVER', startMs: Date.now(), offsetMs: 0, durationMs: 5, statusCode: 'UNSET', httpStatus: 200, attributes: {} }] } };
+  routes['/api/logs'] = { body: { logs: [], count: 0, hasMore: false } };
+  const t = await mcp.client.readResource({ uri: 'tracelens://trace/abcdef0123456789' });
+  assert.match(t.contents[0].text, /^Trace abcdef0123456789/);
+});

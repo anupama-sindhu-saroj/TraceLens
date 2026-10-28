@@ -18,6 +18,7 @@
     "web": "npm run dev -w frontend",
     "test": "npm run test -w backend/server",
     "mcp": "npm run start -w mcp-server",
-    "test:mcp": "npm run test -w mcp-server"
+    "test:mcp": "npm run test -w mcp-server",
+    "mcp:http": "npm run start:http -w mcp-server"
   }
 }

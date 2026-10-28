@@ -129,3 +129,24 @@ test('renderTrace: a slow call that repeats is flagged as a group, with attribut
   assert.equal((out.match(/attributes \(first of 5\): fault\.injected=true fault\.type=latency/g) || []).length, 1);
   assert.match(out, /Most own time: inventory POST \/reserve 7\.5 s \(5 spans, 1\.5 s each\)/);
 });
+
+test('analyzeTrace: groups repeated spans, flags only when the group is a big share, one attributes carrier per group', () => {
+  const base = 1_700_000_000_000;
+  const mk = (id, parent, name, start, dur) => span({ spanId: id, parentSpanId: parent, serviceName: 'inventory', name, startMs: base + start, offsetMs: start, durationMs: dur });
+  const slow = { traceId: 't', durationMs: 4000, spans: [
+    span({ spanId: 'g', parentSpanId: null, serviceName: 'gateway', name: 'root', startMs: base, offsetMs: 0, durationMs: 4000 }),
+    mk('a', 'g', 'POST /reserve', 0, 1500), mk('b', 'g', 'POST /reserve', 1500, 1500), mk('c', 'g', 'POST /reserve', 3000, 1000)] };
+  const r = F.analyzeTrace(slow);
+  assert.equal(r.topGroup.key, 'inventory POST /reserve');
+  assert.equal(r.topGroup.total, 4000);
+  assert.deepEqual([...r.flagged].sort(), ['a', 'b', 'c']);
+  assert.equal(r.firstFlaggedId, 'a');
+
+  // a trace where no group takes 30% of the time flags nothing: ten different 100 ms children fill a 1000 ms parent
+  const flat = { traceId: 't', durationMs: 1000, spans: [
+    span({ spanId: 'g', parentSpanId: null, serviceName: 'gateway', name: 'root', startMs: base, offsetMs: 0, durationMs: 1000 }),
+    ...Array.from({ length: 10 }, (_, i) => mk(`c${i}`, 'g', `GET /x${i}`, i * 100, 100))] };
+  const f = F.analyzeTrace(flat);
+  assert.equal(f.flagged.size, 0);
+  assert.equal(f.firstFlaggedId, null);
+});
